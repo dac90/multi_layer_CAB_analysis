@@ -1,0 +1,22 @@
+name = "CAB_analysis"
+uuid = "feadf0c2-91b3-42de-9ae6-52fb956d8094"
+authors = ["Your Name <you@example.com>"]
+version = "0.1.0"
+
+[deps]
+GR = "28b8d3ca-fb5f-59d9-8090-bfdbd6d07a71"
+HiGHS = "87dc4568-4c63-4d18-b0c0-bb2238e4078b"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+PyPlot = "d330b81b-6aea-500a-939a-2ce795aea3ee"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+
+[compat]
+GR = "0.73.17"
+HiGHS = "1.18.2"
+JuMP = "1.26.0"
+LinearAlgebra = "1.11.0"
+Plots = "1.40.17"
+PyPlot = "2.11.6"
