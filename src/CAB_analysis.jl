@@ -4,8 +4,7 @@ module CAB_analysis
 using PyCall
 using Serialization
 using LinearAlgebra
-using JuMP
-using HiGHS
+ 
 using Plots
 
 export save_params, get_params, calculate_partitions, get_partitions, plot_CAB
@@ -21,10 +20,10 @@ end
 struct PartitionEntry{N}
     phi::Vector{Float64}
     pattern::NTuple{N, BitVector}
+    W_hat::Matrix{Float64}
+    b_hat::Vector{Float64}
     W_tilde::Matrix{Float64}
     b_tilde::Vector{Float64}
-    W_hidden_stack::Matrix{Float64}
-    b_hidden_stack::Vector{Float64}
     tag::String
 end
 
@@ -72,7 +71,7 @@ function get_params(path::String)
 end
 
 """
-    unwrap_affine(params::Dict, pattern::Vector{BitVector}) -> (W_tilde::Matrix, b_tilde::Matrix, W_hidden_stack::Matrix, b_hidden_stack::Matrix)
+    unwrap_affine(params::Dict, pattern::Vector{BitVector}) -> (W_hat::Matrix, b_hat::Matrix, W_tilde::Matrix, b_tilde::Matrix)
 
 Given params and a list of ReLU activation masks, computes the affine function `f(x) = A * x + b`
 for that region.
@@ -81,13 +80,13 @@ function unwrap_affine(path::String, pattern::NTuple{N, BitVector}) where {N}
     params = deserialize(path)
     L = N + 1  # Total layers
 
-    # Initialize W_tilde and b_tilde
-    W_tilde = params["W_1"]
-    b_tilde = params["b_1"]
+    # Initialize W_hat and b_hat
+    W_hat = params["W_1"]
+    b_hat = params["b_1"]
 
-    # Sequences (store all intermediate W_tilde and b_tilde)
-    W_hidden_seq = [W_tilde]
-    b_hidden_seq = [b_tilde]
+    # Sequences (store all intermediate W_hat and b_hat)
+    W_hat_seq = [W_hat]
+    b_hat_seq = [b_hat]
 
     # Loop through layers
     for l in 2:L
@@ -95,19 +94,19 @@ function unwrap_affine(path::String, pattern::NTuple{N, BitVector}) where {N}
         W = params["W_$(l)"]
         b = params["b_$(l)"]
 
-        W_tilde = W * D * W_tilde
-        b_tilde = W * D * b_tilde .+ b
+        W_hat = W * D * W_hat
+        b_hat = W * D * b_hat .+ b
 
-        # Append current W_tilde and b_tilde to the sequences
-        push!(W_hidden_seq, W_tilde)
-        push!(b_hidden_seq, b_tilde)
+        # Append current W_hat and b_hat to the sequences
+        push!(W_hat_seq, W_hat)
+        push!(b_hat_seq, b_hat)
     end
 
     # This matrix and vector output the result in all hidden layers of the matrix, but not the actual output.
-    W_hidden_stack = reduce(vcat, W_hidden_seq[1:end-1])
-    b_hidden_stack = reduce(vcat, b_hidden_seq[1:end-1])
+    W_tilde = reduce(vcat, W_hat_seq[1:end-1])
+    b_tilde = reduce(vcat, b_hat_seq[1:end-1])
 
-    return W_tilde, b_tilde, W_hidden_stack, b_hidden_stack
+    return W_hat, b_hat, W_tilde, b_tilde
 end
 
 
@@ -150,7 +149,7 @@ function calculate_partitions(param_path::String, partition_path::String, input_
 
     function LP_feasability(fm::FeasibilityModel, A::Matrix{Float64}, b::Vector{Float64}, pattern::NTuple{N, BitVector}) where {N}
         # Input variables
-        orthant = 2 .* 2 .* Int.(reduce(vcat, pattern)) .- 1
+        orthant = 2 .* Int.(reduce(vcat, pattern)) .- 1
         A_flipped = Diagonal(orthant) * A
         b_flipped = b .* orthant
         # Add constraints: W_scaled * x + b_scaled >= epsilon (small positive)
@@ -168,9 +167,9 @@ function calculate_partitions(param_path::String, partition_path::String, input_
     partitions = Dict{UInt128, PartitionEntry}()
 
     for pattern in all_activation_patterns(layer_sizes)
-        W_tilde, b_tilde, W_hidden_stack, b_hidden_stack = unwrap_affine(param_path, pattern)
-        phi = -pinv(W_tilde) * b_tilde
-        nonvoid_bool = LP_feasability(fm1, W_hidden_stack, b_hidden_stack, pattern)
+        W_hat, b_hat, W_tilde, b_tilde = unwrap_affine(param_path, pattern)
+        phi = -pinv(W_hat) * b_hat
+        nonvoid_bool = LP_feasability(fm1, W_tilde, b_tilde, pattern)
         tag = "N/A"
         if nonvoid_bool
             if phi == [0.0, 0.0]
@@ -178,9 +177,9 @@ function calculate_partitions(param_path::String, partition_path::String, input_
             else    # If non-void and non-null, perform a projection from the space of the CAB plane and repeat LP test to test for boundary region
                 Q, _ = qr([phi I])
                 phi_ortho = Q[:, 2:end]
-                W_hidden_stack_proj = W_hidden_stack * phi_ortho
-                b_hidden_stack_proj = (W_hidden_stack * phi) + b_hidden_stack
-                boundary_bool = LP_feasability(fm2, W_hidden_stack_proj, b_hidden_stack_proj, pattern)
+                W_tilde_proj = W_tilde * phi_ortho
+                b_tilde_proj = (W_tilde * phi) + b_tilde
+                boundary_bool = LP_feasability(fm2, W_tilde_proj, b_tilde_proj, pattern)
                 if boundary_bool
                     tag = "Boundary"
                 else
@@ -194,7 +193,7 @@ function calculate_partitions(param_path::String, partition_path::String, input_
                 tag = "Void"
             end
         end
-        partitions[foldl((acc, b) -> (acc << 1) | b, Iterators.flatten(pattern); init=UInt128(0))] = PartitionEntry(phi, pattern, W_tilde, b_tilde, W_hidden_stack, b_hidden_stack, tag)
+        partitions[foldl((acc, b) -> (acc << 1) | b, Iterators.flatten(pattern); init=UInt128(0))] = PartitionEntry(phi, pattern, W_hat, b_hat, W_tilde, b_tilde, tag)
     end
 
     println("Saving CAB to $partition_path using Serialization")
@@ -263,9 +262,9 @@ function plot_CAB(path::String, layer_sizes::Vector{Int})
 
         # Compute mask: points where all hidden constraints are positive
         orthant = 2 .* Int.(reduce(vcat, partition.pattern)) .- 1
-        W_hidden_stack_flipped = Diagonal(orthant) * partition.W_hidden_stack
-        b_hidden_stack_flipped = partition.b_hidden_stack .* orthant
-        mask .= vec(all(W_hidden_stack_flipped * points' .+ b_hidden_stack_flipped .> 0, dims=1))
+        W_tilde_flipped = Diagonal(orthant) * partition.W_tilde
+        b_tilde_flipped = partition.b_tilde .* orthant
+        mask .= vec(all(W_tilde_flipped * points' .+ b_tilde_flipped .> 0, dims=1))
 
         # Shade region based on mask
         Zg .= NaN

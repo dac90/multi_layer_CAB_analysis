@@ -62,15 +62,15 @@ for epoch in range(10001):
     loss.backward()
     optimizer.step()
 
-    if epoch % 2000 == 0:
+    if epoch == 6000:
         print(f"Epoch {epoch}, Loss: {loss.item():.6f}")
 
         # Save params to .jlser
-        CAB_analysis.save_params(model.network, "params.jlser")
-        CAB_analysis.get_params("params.jlser")
+        CAB_analysis.save_params(model.network, "data/params.jlser")
+        CAB_analysis.get_params("data/.jlser")
 
         # Calculate CAB
-        CAB_analysis.calculate_partitions("params.jlser", "partitions.jlser", n[0], n[1:-1])  # Pass hidden sizes
-        CAB_analysis.get_partitions("partitions.jlser")
+        CAB_analysis.calculate_partitions("data/params.jlser", "data/partitions.jlser", n[0], n[1:-1])  # Pass hidden sizes
+        CAB_analysis.get_partitions("data/partitions.jlser")
         # Plot CAB
-        CAB_analysis.plot_CAB("partitions.jlser", n[1:-1])  # Pass hidden sizes
+        CAB_analysis.plot_CAB("data/partitions.jlser", n[1:-1])  # Pass hidden sizes
