@@ -55,22 +55,32 @@ optimizer = optim.Adam(model.parameters(), lr=0.01)
 criterion = nn.MSELoss()
 
 # Training loop
-for epoch in range(10001):
-    optimizer.zero_grad()
-    outputs = model(X)
-    loss = criterion(outputs, Y)
-    loss.backward()
-    optimizer.step()
+steps_per_epoch = 10
+total_epochs = 1000
 
-    if epoch == 6000:
-        print(f"Epoch {epoch}, Loss: {loss.item():.6f}")
+for epoch in range(total_epochs):
+    for _ in range(steps_per_epoch):
+        optimizer.zero_grad()
+        outputs = model(X)
+        loss = criterion(outputs, Y)
+        loss.backward()
+        optimizer.step()
+    print(f"Epoch {epoch}, Loss: {loss.item():.6f}")
 
-        # Save params to .jlser
-        CAB_analysis.save_params(model.network, "data/params.jlser")
-        CAB_analysis.get_params("data/.jlser")
+    # Save params to .jlser
+    CAB_analysis.save_params(model.network, epoch)
+    #CAB_analysis.get_params(epoch)
 
-        # Calculate CAB
-        CAB_analysis.calculate_partitions("data/params.jlser", "data/partitions.jlser", n[0], n[1:-1])  # Pass hidden sizes
-        CAB_analysis.get_partitions("data/partitions.jlser")
-        # Plot CAB
-        CAB_analysis.plot_CAB("data/partitions.jlser", n[1:-1])  # Pass hidden sizes
+    # Calculate CAB Tree (Boundary Partitions Only)
+    #CAB_analysis.calculate_boundary_tree(n, 1, epoch)  # Pass hidden sizes
+    #CAB_analysis.get_partition_tree(epoch)
+
+    # Calculate CAB All (For all neurons)
+    CAB_analysis.calculate_mixed_all(n, epoch)  # Pass hidden sizes
+    #CAB_analysis.get_partition_all(epoch)
+
+for epoch in range(total_epochs):
+    # Plot CAB
+    CAB_analysis.plot_CAB_all(epoch)  # Pass hidden sizes
+
+CAB_analysis.create_animation()
