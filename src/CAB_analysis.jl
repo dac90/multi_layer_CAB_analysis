@@ -6,14 +6,17 @@ using Serialization
 using LinearAlgebra
 using JuMP
 using HiGHS
-using Plots
+using GLMakie
 using Colors
 using ColorSchemes
 using LaTeXStrings
 using Printf
+using ColorTypes
+using ColorVectorSpace
+using ImageCore
 using FFMPEG
 
-export save_params, get_params, calculate_partition_simple, get_partition_simple, calculate_partition_tree, calculate_boundary_tree, get_partition_tree, calculate_boundary_all, get_partition_all, calculate_mixed_all, plot_CAB_all, create_animation
+export save_params, get_params, calculate_partition_simple, get_partition_simple, calculate_partition_tree, calculate_boundary_tree, get_partition_tree, calculate_partition_all, calculate_boundary_all, get_partition_all, plot_CAB_all, create_animation, plot_partition_count
 
 # Used in the LP feasability test
 mutable struct FeasibilityModel
@@ -38,7 +41,7 @@ end
 
 Given a PyTorch model (e.g. `torch.nn.Sequential`), save weight matrices and bias vectors to '.jlser' file at 'path'.
 """
-function save_params(model::PyObject, epoch=nothing)
+function save_params(model::PyObject, epoch=nothing, to_save = true)
     torch = pyimport("torch")
     params = Dict{String, Any}()
     layer_index = 1
@@ -52,8 +55,12 @@ function save_params(model::PyObject, epoch=nothing)
         end
     end
 
-    if !isnothing(epoch)
-        save_path = @sprintf("data/params_%04d.jlser", epoch)
+    if to_save
+        if isnothing(epoch)
+            save_path = "data/params.jlser"
+        else
+            save_path = @sprintf("data/params_%04d.jlser", epoch)
+        end
         println("Saving parameters to $save_path using Serialization")
         open(save_path, "w") do io
             serialize(io, params)
@@ -157,7 +164,7 @@ Subsequently performs a projection and another feasability test to determine whe
 Saves all results as a in a FeasibilityModel struct in the '.jlser' file at 'path'.
 """
 
-function calculate_partition_simple(layer_sizes::Vector{Int}, epoch=nothing)
+function calculate_partition_simple(layer_sizes::Vector{Int}, epoch=nothing, to_save::Bool = true)
 
     function init_fm(x_size::Int; solver=HiGHS.Optimizer, epsilon=1e-6)
         model = Model(solver)
@@ -212,8 +219,12 @@ function calculate_partition_simple(layer_sizes::Vector{Int}, epoch=nothing)
         end
     end
 
-    if !isnothing(epoch)
-        save_path = @sprintf("data/partitions_%04d.jlser", epoch)
+    if to_save
+        if isnothing(epoch)
+            save_path = "data/partitions.jlser"
+        else
+            save_path = @sprintf("data/partitions_%04d.jlser", epoch)
+        end
         println("Saving partitions to $save_path using Serialization")
         open(save_path, "w") do io
             serialize(io, partitions)
@@ -245,7 +256,7 @@ end
 Calculates the CAB of a Neuron in all lower layers, latent and otherwise. Ignores void partitions effectively
 """
 
-function calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch=nothing)
+function calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch = nothing, to_save::Bool = true)
 
     function init_fm(x_size::Int; solver=HiGHS.Optimizer, epsilon=1e-6)
         model = Model(solver)
@@ -333,8 +344,12 @@ function calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, e
         empty!(fm1.model)
         empty!(fm2.model)
     end
-    if !isnothing(epoch)
-        save_path = @sprintf("data/partition_tree_%04d.jlser", epoch)
+    if to_save
+        if isnothing(epoch)
+            save_path = "data/partition_tree.jlser"
+        else
+            save_path = @sprintf("data/partition_tree_%04d.jlser", epoch)
+        end
         println("Saving CAB tree (including non-boundary) to $save_path using Serialization")
         open(save_path, "w") do io
             serialize(io, partition_tree)
@@ -349,7 +364,7 @@ end
 Calculates the CAB of a Neuron in all lower layers, latent and otherwise. Ignores void and non-boundary partitions effectively
 """
 
-function calculate_boundary_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch = nothing)
+function calculate_boundary_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch = nothing, to_save::Bool=true)
 
     function init_fm(x_size::Int; solver=HiGHS.Optimizer, epsilon=1e-6)
         model = Model(solver)
@@ -425,8 +440,13 @@ function calculate_boundary_tree(layer_sizes::Vector{Int}, neuron_index::Int, ep
         partition_tree[L - l] = partition_layer
         empty!(fm.model)
     end
-    if !isnothing(epoch)
-        save_path = @sprintf("data/partition_tree_%04d.jlser", epoch)
+
+    if to_save
+        if isnothing(epoch)
+            save_path = "data/partition_tree.jlser"
+        else
+            save_path = @sprintf("data/partition_tree_%04d.jlser", epoch)
+        end
         println("Saving CAB tree (boundary only) to $save_path using Serialization")
         open(save_path, "w") do io
             serialize(io, partition_tree)
@@ -459,19 +479,23 @@ end
 Calculates the partitions in the input layer only, but it does so for all neurons in the network
 """
 
-function calculate_partition_all(layer_sizes::Vector{Int}, epoch = nothing)
+function calculate_partition_all(layer_sizes::Vector{Int}, epoch = nothing, to_save::Bool = true)
     L = size(layer_sizes)[1] - 1
     partition_neuron_table = Vector{Vector{Dict{UInt128, PartitionEntry}}}(undef, L)
     for l in 1:L
         partition_neuron_layer = Vector{Dict{UInt128, PartitionEntry}}(undef, layer_sizes[l+1])
         for i in 1:layer_sizes[l+1]
-            partition_neuron_layer[i] = calculate_partition_tree(layer_sizes[1:l+1], i, epoch)[end]
+            partition_neuron_layer[i] = calculate_partition_tree(layer_sizes[1:l+1], i, epoch, false)[end]
         end
         partition_neuron_table[l] = partition_neuron_layer
     end
 
-    if !isnothing(epoch)
-        save_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+    if to_save
+        if isnothing(epoch)
+            save_path = "data/partition_neuron_table.jlser"
+        else
+            save_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+        end
         println("Saving CAB neuron table (including non-boundary) to $save_path using Serialization")
         open(save_path, "w") do io
             serialize(io, partition_neuron_table)
@@ -486,54 +510,24 @@ end
 Calculates the boundary partitions in the input layer only, but it does so for all neurons in the network
 """
 
-function calculate_boundary_all(layer_sizes::Vector{Int}, epoch = nothing)
+function calculate_boundary_all(layer_sizes::Vector{Int}, epoch = nothing, to_save::Bool = true)
     L = size(layer_sizes)[1] - 1
     partition_neuron_table = Vector{Vector{Dict{UInt128, PartitionEntry}}}(undef, L)
     for l in 1:L
         partition_neuron_layer = Vector{Dict{UInt128, PartitionEntry}}(undef, layer_sizes[l+1])
         for i in 1:layer_sizes[l+1]
-            partition_neuron_layer[i] = calculate_boundary_tree(layer_sizes[1:l+1], i, epoch)[end]
+            partition_neuron_layer[i] = calculate_boundary_tree(layer_sizes[1:l+1], i, epoch, false)[end]
         end
         partition_neuron_table[l] = partition_neuron_layer
     end
 
-    if !isnothing(epoch)
-        save_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+    if to_save
+        if isnothing(epoch)
+            save_path = "data/partition_neuron_table.jlser"
+        else
+            save_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+        end
         println("Saving CAB neuron table (boundary only) to $save_path using Serialization")
-        open(save_path, "w") do io
-            serialize(io, partition_neuron_table)
-        end
-    end
-
-    return partition_neuron_table
-end
-
-"""
-    calculate_mixed_all()
-
-Calculates the boundary partitions in the input layer only, but it does so for all neurons in the network
-"""
-
-function calculate_mixed_all(layer_sizes::Vector{Int}, epoch = nothing)
-    L = size(layer_sizes)[1] - 1
-    partition_neuron_table = Vector{Vector{Dict{UInt128, PartitionEntry}}}(undef, L)
-    for l in 1:L-1
-        partition_neuron_layer = Vector{Dict{UInt128, PartitionEntry}}(undef, layer_sizes[l+1])
-        for i in 1:layer_sizes[l+1]
-            partition_neuron_layer[i] = calculate_boundary_tree(layer_sizes[1:l+1], i, epoch)[end]
-        end
-        partition_neuron_table[l] = partition_neuron_layer
-    end
-
-    partition_neuron_layer = Vector{Dict{UInt128, PartitionEntry}}(undef, layer_sizes[L+1])
-    for i in 1:layer_sizes[L+1]
-        partition_neuron_layer[i] = calculate_partition_tree(layer_sizes[1:L+1], i, epoch)[end]
-    end
-    partition_neuron_table[L] = partition_neuron_layer
-
-    if !isnothing(epoch)
-        save_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
-        println("Saving CAB neuron table (boundary only unless top neuron) to $save_path using Serialization")
         open(save_path, "w") do io
             serialize(io, partition_neuron_table)
         end
@@ -563,44 +557,39 @@ function get_partition_all(epoch)
     return partition_neuron_table
 end
 
-"""
-    plot_CAB_all(weights::Dict, layer_sizes::Vector{Int})
-
-Plots all activation boundaries for a 2D input network.
-"""
-
-function plot_CAB_all(epoch = nothing)
-    load_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
+    if isnothing(epoch)
+        load_path = "data/partition_neuron_table.jlser"
+    else
+        load_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+    end
     partition_neuron_table = deserialize(load_path)
 
-    x = LinRange(-5, 5, 100)
-    y = LinRange(-5, 5, 100)
+    x = LinRange(-5, 5, 200)
+    y = LinRange(-5, 5, 200)
     Xg = repeat(reshape(x, :, 1), 1, length(y))
     Yg = repeat(reshape(y, 1, :), length(x), 1)
-    points = hcat(vec(Xg), vec(Yg))  # (N × 2) matrix
+    points = hcat(vec(Xg), vec(Yg))
     mask = falses(size(points, 1))
-    z = Vector{Float64}(undef, size(points, 1))  # preallocate for one scalar per point
+    z = Vector{Float64}(undef, size(points, 1))
 
-    # --- Main Plot ---
-    plt = plot(; 
-        title = isnothing(epoch) ? "Analytical CAB" : "Analytical CAB (epoch = $epoch)",
-        xlabel = L"x_1",
-        ylabel = L"x_2",
-        xlims = (-5, 5), 
-        ylims = (-5, 5), 
-        aspect_ratio = 1,
-        legend=:topleft
-    )  
+    # Clear previous contents of the axis
+    empty!(ax.scene.plots)
+    ax.title = isnothing(epoch) ? latexstring("z^{[$neuron_layer]}_$neuron_index \\text{ with CAB}") : latexstring("z^{[$neuron_layer]}_{$neuron_index} \\text{ with CAB} at epoch $epoch}")
+    
 
     color_limits = (-10, 10)
-    Zg_boundary = fill(NaN, size(Xg))
-    Zg_null = fill(NaN, size(Xg))
+    colors = [get(ColorSchemes.turbid, i/(length(partition_neuron_table)-1)) for i in 0:(length(partition_neuron_table)-1)]
+
+    Zg              = fill(NaN, size(Xg))
+    Zg_boundary     = fill(NaN, size(Xg))
+    Zg_null         = fill(NaN, size(Xg))
     Zg_non_boundary = fill(NaN, size(Xg))
 
-    # --- Heatmap for partitions ---
-    for (_, partition) in partition_neuron_table[end][1]
-        fill!(mask, false)
+    println("Creating figure for epoch $epoch")
 
+    for (_, partition) in partition_neuron_table[neuron_layer][neuron_index]
+        fill!(mask, false)
         if isempty(partition.pattern) || isempty(partition.W_tilde) || isempty(partition.b_tilde)
             mask .= true
         else
@@ -609,32 +598,30 @@ function plot_CAB_all(epoch = nothing)
             b_tilde_flipped = partition.b_tilde .* orthant
             mask .= vec(all(W_tilde_flipped * points' .+ b_tilde_flipped .> 0, dims=1))
         end
-
         mul!(z, points, vec(partition.W_hat))
         z .+= partition.b_hat
 
         if partition.tag == "Boundary"
             Zg_boundary[mask] .= z[mask]
+            mul!(z, points, vec(partition.W_hat))
+            z .+= partition.b_hat
+            Zg[mask] .= z[mask]
         elseif partition.tag == "Null"
             Zg_null[mask] .= z[mask]
-        else 
+        else
             Zg_non_boundary[mask] .= z[mask]
         end
     end
 
-    heatmap!(plt, x, y, Zg_boundary, color=cgrad(ColorSchemes.Reds, rev=true), clim=color_limits, alpha=0.8, interpolate=true, colorbar=false, label=false)
-    heatmap!(plt, x, y, Zg_null,     color=cgrad(ColorSchemes.Purples, rev=true), clim=color_limits, alpha=0.8, interpolate=true, colorbar=false, label=false)
-    heatmap!(plt, x, y, Zg_non_boundary, color=cgrad(ColorSchemes.Blues, rev=true), clim=color_limits, alpha=0.8, interpolate=true, colorbar=false, label=false)
+    heatmap!(ax, x, y, Zg_boundary; colormap = reverse(cgrad(ColorSchemes.Reds)), colorrange = color_limits, alpha=0.8)
+    heatmap!(ax, x, y, Zg_null;     colormap = reverse(cgrad(ColorSchemes.Purples)), colorrange = color_limits, alpha=0.8)
+    heatmap!(ax, x, y, Zg_non_boundary; colormap = reverse(cgrad(ColorSchemes.Blues)), colorrange = color_limits, alpha=0.8)
+    contour!(ax, x, y, Zg; levels=[0], linewidth=2, color=colors[neuron_layer])
 
-
-    # --- Contour Lines ---
-    colors = [get(ColorSchemes.turbid, 1 - i/(length(partition_neuron_table)-1)) for i in 0:(length(partition_neuron_table)-1)]
-    Zg = fill(NaN, size(Xg))
-
-    for (layer_idx, partition_neuron_layer) in enumerate(Iterators.reverse(partition_neuron_table))
-        for partitions in partition_neuron_layer
+    for (layer_idx, partition_neuron_layer) in enumerate(partition_neuron_table[1:neuron_layer-1])
+        for partition_neuron in partition_neuron_layer
             Zg .= NaN
-            for (_, partition) in partitions
+            for (_, partition) in partition_neuron
                 if partition.tag == "Boundary"
                     if isempty(partition.pattern)
                         mask .= true
@@ -649,59 +636,220 @@ function plot_CAB_all(epoch = nothing)
                     Zg[mask] .= z[mask]
                 end
             end
-            contour!(plt, x, y, Zg, levels=[0],
-                linewidth=2,
-                color=colors[layer_idx],
-                colorbar=false,
-                label="Layer $layer_idx"
-            )
+            contour!(ax, x, y, Zg; levels=[0], linewidth=2, color=colors[layer_idx])
         end
     end
-    for (layer_idx, col) in enumerate(colors)
-        label_idx = length(colors) - layer_idx + 1
-        plot!(plt, [NaN], [NaN], color=col, linewidth=2, label="Layer $label_idx")
-    end
-
-    # --- Colorbars (Reds, Purples, Blues) ---
-    n_colors = 256
-    color_values = LinRange(color_limits[1], color_limits[2], n_colors)
-
-    function single_colorbar(cscheme)
-        return heatmap(
-            [1], color_values, reshape(1:length(color_values), :, 1),
-            color = cgrad(cscheme, rev=true),   # <-- reversed
-            xaxis = false, ylims = color_limits,
-            yticks = range(color_limits[1], color_limits[2], length=5),
-            legend = false, framestyle = :box,
-            size = (10, 100)
-        )
-    end
-
-    colorbar_red    = single_colorbar(ColorSchemes.Reds)
-    colorbar_purple = single_colorbar(ColorSchemes.Purples)
-    colorbar_blue   = single_colorbar(ColorSchemes.Blues)
-
-    # Combine colorbars horizontally
-    combined_cbar = plot(colorbar_red, colorbar_purple, colorbar_blue, layout = (1, 3), size=(150, 600))
-
-    # --- Combine main plot and colorbars ---
-    final_layout = @layout [a{0.8w} b{0.2w}]
-    final_plot = plot(plt, combined_cbar, layout = final_layout, size = (900, 600))
-
-    # --- Save Figure ---
-    if isnothing(epoch)
-        save_path = "CAB_plot.png"
-    else
-        save_path = @sprintf("plot_store/CAB_plot_%04d.png", epoch)
-    end
-    println("Saving CAB plot to $save_path")
-    savefig(final_plot, save_path)
-    return final_plot
 end
 
-function create_animation()
-    ffmpeg_exe = FFMPEG.ffmpeg()
-    run(`$ffmpeg_exe -framerate 10 -i plot_store/CAB_plot_%04d.png -c:v libx264 -pix_fmt yuv420p CAB_animation.mp4`)
+"""
+    plot_CAB_all(weights::Dict, layer_sizes::Vector{Int})
+
+Plots all activation boundaries for a 2D input network.
+"""
+
+function plot_CAB_all(layer_sizes::Vector{Int}, neuron_layer::Int, neuron_index::Int, epoch = nothing, to_save::Bool = true)
+    # --- Figure Setup ---
+    title_text = isnothing(epoch) ? L"z^{[$neuron_layer]}_$neuron_index with CAB" : L"Pre-activation z^{[$neuron_layer]}_$neuron_index with CAB at (epoch = $epoch)"
+    fig = Figure(size = (900, 600))
+    ax = Axis(fig[1, 1],
+        title = title_text,
+        xlabel = L"x_1",
+        ylabel = L"x_2",
+        aspect = DataAspect(),
+        limits = ((-5, 5), (-5, 5))
+    )
+
+    # --- Call shared plotting logic ---
+    plot_CAB_frame!(ax, neuron_layer, neuron_index, epoch)
+
+    # --- Legend for Layers (recomputed here for fig) ---
+    colors = [get(ColorSchemes.turbid, i/(length(layer_sizes)-2)) for i in 0:(length(layer_sizes)-2)]
+
+    for (layer_idx, col) in enumerate(colors)
+        label_idx = length(colors) - layer_idx + 1
+        lines!(ax, [NaN], [NaN], color=col, linewidth=2, label="Layer $label_idx")
+    end
+    axislegend(ax, position=:lt)
+
+    # --- Colorbars ---
+    subgrid = fig[1, 2] = GridLayout()
+    color_limits = (-10, 10)
+    Colorbar(subgrid[1, 1], colormap = reverse(cgrad(ColorSchemes.Reds)),
+             limits = color_limits, label = "Boundary", width = 20, height = Relative(0.9))
+    Colorbar(subgrid[1, 2], colormap = reverse(cgrad(ColorSchemes.Purples)),
+             limits = color_limits, label = "Null", width = 20, height = Relative(0.9))
+    Colorbar(subgrid[1, 3], colormap = reverse(cgrad(ColorSchemes.Blues)),
+             limits = color_limits, label = "Non-Boundary", width = 20, height = Relative(0.9))
+
+    # --- Save Figure ---
+    if to_save
+        if isnothing(epoch)
+            save_path = "CAB_plot.png"
+        else
+            save_path = @sprintf("plot_store/CAB_plot_%04d.png", epoch)
+        end
+        println("Saving CAB plot to $save_path")
+        save(save_path, fig)
+    end
+
+    return fig
+end
+
+function create_animation(layer_sizes::Vector{Int}, total_epoch::Int;
+                          output_path::String = "CAB_animation.mp4",
+                          framerate::Int = 10)
+    # === Figure ===
+    fig = Figure(size = (1400, 1000), figure_padding=5)
+    Label(fig[0, 2], "Pre-activations and CAB's of all neurons", fontsize = 28, tellwidth = false, tellheight = true)
+
+    # Reduce gaps between rows and columns
+    rowgap!(fig.layout, 5)         # 5px vertical spacing
+    colgap!(fig.layout, 5)         # 5px horizontal spacing
+
+    # === Store Axes in Grid=== 
+    axes_grid = Vector{Vector{Axis}}(undef, length(layer_sizes)-1)
+
+    # --- Legend for Layers (recomputed here for fig) ---
+    colors = [get(ColorSchemes.turbid, i/(length(layer_sizes)-2)) for i in 0:(length(layer_sizes)-2)]
+    dummy_axis = Axis(fig.scene)  # Create axis not added to layout
+    legend_lines = [lines!(dummy_axis, [NaN], [NaN], color=col, linewidth=2) for col in colors]
+    Legend(fig[1, 1], legend_lines, ["Layer $i" for i in 1:length(colors)]; title = "Layers")
+    colsize!(fig.layout, 1, 100)
+
+    # === Top Layer=== #
+    axes_grid[1] = Vector{Axis}(undef, layer_sizes[end])
+    top_grid = fig[1, 2] = GridLayout()
+    colgap!(top_grid, 5)
+    rowsize!(fig.layout, 1, Relative(0.4))
+
+    for neuron_index in 1:layer_sizes[end]
+            axes_grid[1][neuron_index] = Axis(top_grid[1, neuron_index], aspect = DataAspect())
+            colsize!(top_grid, neuron_index, Auto())
+        end
+    # === Colorbars=== 
+    subgrid = fig[1, 3] = GridLayout()
+    colsize!(fig.layout, 3, 100)
+    Colorbar(subgrid[1, 1], colormap = reverse(cgrad(ColorSchemes.Reds)),
+             limits = (-10, 10), label = "Boundary", width = 20, height = Relative(0.9))
+    Colorbar(subgrid[1, 2], colormap = reverse(cgrad(ColorSchemes.Purples)),
+             limits = (-10, 10), label = "Null", width = 20, height = Relative(0.9))
+    Colorbar(subgrid[1, 3], colormap = reverse(cgrad(ColorSchemes.Blues)),
+             limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
+
+    for row in 2:length(layer_sizes)-1
+        neuron_layer = length(layer_sizes) - row
+
+        row_grid = fig[row, 2] = GridLayout()
+        colgap!(row_grid, 5)
+        rowsize!(fig.layout, row, Auto())
+        axes_grid[row] = Vector{Axis}(undef, layer_sizes[neuron_layer + 1])
+
+        for neuron_index in 1:layer_sizes[neuron_layer+1]
+            axes_grid[row][neuron_index] = Axis(row_grid[1, neuron_index], aspect = DataAspect())
+            # Make columns uniform width
+            colsize!(row_grid, neuron_index, Auto())
+        end
+    end
+
+    # === Animation Recording ===
+    record(fig, output_path, 0:(total_epoch-1); framerate = framerate) do epoch
+        # Update all plots
+        for row in 1:length(layer_sizes)-1
+            neuron_layer = length(layer_sizes) - row
+            for neuron_index in 1:layer_sizes[neuron_layer+1]
+                plot_CAB_frame!(axes_grid[row][neuron_index], neuron_layer, neuron_index, epoch)
+            end
+        end
+    end
+
+    println("Animation saved to $output_path")
+end
+
+function create_CAB_dashboard(layer_sizes::Vector{Int}, total_epoch::Int)
+    fig = Figure(resolution = (1000, 700))
+    ax = Axis(fig[1, 1],
+              title = "Analytical CAB",
+              xlabel = L"x_1", ylabel = L"x_2",
+              aspect = DataAspect(), limits = ((-5, 5), (-5, 5)))
+
+    # Colorbars
+    subgrid = fig[1, 2] = GridLayout()
+    Colorbar(subgrid[1, 1], colormap = reverse(cgrad(ColorSchemes.Reds)),
+             limits = (-10, 10), label = "Boundary", width = 20, height = Relative(0.9))
+    Colorbar(subgrid[1, 2], colormap = reverse(cgrad(ColorSchemes.Purples)),
+             limits = (-10, 10), label = "Null", width = 20, height = Relative(0.9))
+    Colorbar(subgrid[1, 3], colormap = reverse(cgrad(ColorSchemes.Blues)),
+             limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
+
+    # UI elements
+    slider = Slider(fig[2, 1], range = 0:total_epoch-1, startvalue=0)
+    play_button = Button(fig[2, 2], label="▶ Play")
+
+    current_epoch = Observable(0)
+    playing = Observable(false)
+
+    # When slider moves, update current_epoch
+    on(slider.value) do val
+        current_epoch[] = Int(val)
+        plot_CAB_frame!(ax, 0, 1, current_epoch[])
+    end
+
+    # Button toggles play/pause
+    on(play_button.clicks) do _
+        playing[] = !playing[]
+        play_button.label[] = playing[] ? "⏸ Pause" : "▶ Play"
+    end
+
+    # Animation loop (as a task)
+    @async begin
+        while isopen(fig)
+            if playing[]
+                next_epoch = (current_epoch[] + 1) % total_epoch
+                current_epoch[] = next_epoch
+                slider.value[] = next_epoch
+                plot_CAB_frame!(ax, 0, 1, current_epoch[])
+            end
+            sleep(0.2)  # control animation speed
+        end
+    end
+
+    plot_CAB_frame!(ax, 0, 1, neuron_index, current_epoch[]) # Initial plot
+    display(fig)
+    return fig
+end
+
+function plot_partition_count(total_epochs)
+    first_elem_counts = Int[]
+    boundary_counts = Int[]
+
+    for epoch in 0:total_epochs
+        file = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+        if isfile(file)
+            data = deserialize(file)
+
+            # The vector that is the first element
+            first_elem = data[1]
+            push!(first_elem_counts, length(first_elem))
+
+            # Count how many elements have .Tag == "Boundary"
+            boundary_count = count(x -> getfield(x, :Tag, nothing) == "Boundary", first_elem)
+            push!(boundary_counts, boundary_count)
+        else
+            @warn "File not found: $file"
+            push!(first_elem_counts, NaN)
+            push!(boundary_counts, NaN)
+        end
+    end
+
+    fig = Figure(resolution = (1000, 500))
+
+    ax1 = Axis(fig[1, 1], title = "Size of First Element", xlabel = "Epoch", ylabel = "Count")
+    lines!(ax1, 0:total_epochs, first_elem_counts)
+
+    ax2 = Axis(fig[1, 2], title = "Boundary Tags", xlabel = "Epoch", ylabel = "Boundary Count")
+    lines!(ax2, 0:total_epochs, boundary_counts)
+
+    return fig
 end
 
 end # module

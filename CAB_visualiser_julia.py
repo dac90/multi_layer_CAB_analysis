@@ -1,6 +1,6 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
+#import torch
+#import torch.nn as nn
+#import torch.optim as optim
 import numpy as np
 
 import os
@@ -13,12 +13,13 @@ jl = Julia(runtime="C:/Users/dcies/AppData/Local/Programs/Julia-1.11.6/bin/julia
 
 from julia import CAB_analysis  # Now import the module after inclusion
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using", device)
-
 # Network architecture
 n = [2, 4, 4, 1]
 m = 1000
+
+'''
+device = torch.device("cpu")
+print("Using", device)
 
 # Target function
 def target_function(x, y):
@@ -53,11 +54,12 @@ model = FlexibleReLUNetwork(n).to(device).double()
 # Optimizer and loss
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 criterion = nn.MSELoss()
-
+'''
 # Training loop
 steps_per_epoch = 10
-total_epochs = 1000
+total_epochs = 40
 
+'''
 for epoch in range(total_epochs):
     for _ in range(steps_per_epoch):
         optimizer.zero_grad()
@@ -76,11 +78,24 @@ for epoch in range(total_epochs):
     #CAB_analysis.get_partition_tree(epoch)
 
     # Calculate CAB All (For all neurons)
-    CAB_analysis.calculate_mixed_all(n, epoch)  # Pass hidden sizes
+    CAB_analysis.calculate_partition_all(n, epoch)  # Pass hidden sizes
     #CAB_analysis.get_partition_all(epoch)
 
-for epoch in range(total_epochs):
-    # Plot CAB
-    CAB_analysis.plot_CAB_all(epoch)  # Pass hidden sizes
 
-CAB_analysis.create_animation()
+# Plot CAB
+
+CAB_analysis.plot_CAB_all(n, len(n)-1, 1, 11)
+CAB_analysis.plot_CAB_all(n, len(n)-2, 1, 21)
+CAB_analysis.plot_CAB_all(n, len(n)-2, 2, 22)
+CAB_analysis.plot_CAB_all(n, len(n)-2, 3, 23)
+CAB_analysis.plot_CAB_all(n, len(n)-2, 4, 24)
+CAB_analysis.plot_CAB_all(n, len(n)-3, 1, 31)
+CAB_analysis.plot_CAB_all(n, len(n)-3, 2, 32)
+CAB_analysis.plot_CAB_all(n, len(n)-3, 3, 33)
+CAB_analysis.plot_CAB_all(n, len(n)-3, 4, 34)
+'''
+CAB_analysis.create_animation(n, total_epochs)
+
+CAB_analysis.plot_partition_count(total_epochs)
+
+CAB_analysis.create_CAB_dashboard(n, total_epochs)
