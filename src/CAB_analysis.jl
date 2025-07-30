@@ -16,17 +16,22 @@ using ColorVectorSpace
 using ImageCore
 using FFMPEG
 
-# === Export Functions ===
+# === Export Functions === #
 export save_params, get_params, calculate_partition_simple, get_partition_simple, calculate_partition_tree, calculate_boundary_tree, get_partition_tree, calculate_partition_all, calculate_boundary_all, get_partition_all, plot_CAB_all, create_animation, plot_partition_count
 
-# === Feasability Model Structure ===
+# === Pre-Defined Variables === #
+cmap_boundary = reverse(cgrad(ColorSchemes.Reds, 256))
+cmap_null     = reverse(cgrad(ColorSchemes.Purples, 256))
+cmap_nonbound = reverse(cgrad(ColorSchemes.Blues, 256))
+
+# === Feasability Model Structure === #
 mutable struct FeasibilityModel
     model::Model
     x::Vector{VariableRef}
     epsilon::Float64
 end
 
-# === Partition Data Structure ===
+# === Partition Data Structure === #
 struct PartitionEntry
     phi::Vector{Float64}
     pattern::Vector{BitVector}
@@ -37,7 +42,26 @@ struct PartitionEntry
     tag::String
 end
 
-# === Save Network Parameters ===
+struct ConstGrid
+    x::LinRange{Float64}
+    y::LinRange{Float64}
+    Xg::Matrix{Float64}
+    Yg::Matrix{Float64}
+    points::Matrix{Float64}
+    points_T::Matrix{Float64}
+end
+
+const CAB_GRID = let
+    x = LinRange(-5, 5, 100)
+    y = LinRange(-5, 5, 100)
+    Xg = repeat(reshape(x, :, 1), 1, length(y))
+    Yg = repeat(reshape(y, 1, :), length(x), 1)
+    points = hcat(vec(Xg), vec(Yg))
+    points_T = points'
+    ConstGrid(x, y, Xg, Yg, points, points_T)
+end
+
+# === Save Network Parameters === #
 """
     save_params(model::PyObject, epoch::Union{Int, Nothing}::Union{Int, Nothing} = nothing, to_save = true) -> params::Dict{String, Any}
 
@@ -576,22 +600,13 @@ function get_partition_all(epoch)
     return partition_neuron_table
 end
 
-function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
-    # --- Load File ---
-    if isnothing(epoch)
-        load_path = "data/partition_neuron_table.jlser"
-    else
-        load_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
-    end
-    partition_neuron_table = deserialize(load_path)
-
+function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, partition_neuron_table:: Vector{Vector{Dict{UInt128, PartitionEntry}}}, epoch::Int)
     # --- Data Setup ---
-    x = LinRange(-5, 5, 200)
-    y = LinRange(-5, 5, 200)
-    Xg = repeat(reshape(x, :, 1), 1, length(y))
-    Yg = repeat(reshape(y, 1, :), length(x), 1)
-    points = hcat(vec(Xg), vec(Yg))
-    points_T = points'
+    x, y = CAB_GRID.x, CAB_GRID.y
+    points = CAB_GRID.points
+    points_T = CAB_GRID.points_T
+    grid_size = size(CAB_GRID.Xg) 
+
     mask = falses(size(points, 1))
     z = Vector{Float64}(undef, size(points, 1))
 
@@ -605,9 +620,9 @@ function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
     color_limits = (-10, 10)
     colors = [get(ColorSchemes.turbid, i/(length(partition_neuron_table)-1)) for i in 0:(length(partition_neuron_table)-1)]
 
-    Zg_boundary     = fill(NaN, size(Xg))
-    Zg_null         = fill(NaN, size(Xg))
-    Zg_non_boundary = fill(NaN, size(Xg))
+    Zg_boundary     = fill(NaN, grid_size)
+    Zg_null         = fill(NaN, grid_size)
+    Zg_non_boundary = fill(NaN, grid_size)
 
     for (_, partition) in partition_neuron_table[neuron_layer][neuron_index] # For each partition in the chosen neuron
         # --- Generate Mask ---
@@ -636,9 +651,9 @@ function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
     end
 
     # --- Plot Heatmaps ---
-    heatmap!(ax, x, y, Zg_boundary; colormap = reverse(cgrad(ColorSchemes.Reds)), colorrange = color_limits, alpha=0.8)
-    heatmap!(ax, x, y, Zg_null;     colormap = reverse(cgrad(ColorSchemes.Purples)), colorrange = color_limits, alpha=0.8)
-    heatmap!(ax, x, y, Zg_non_boundary; colormap = reverse(cgrad(ColorSchemes.Blues)), colorrange = color_limits, alpha=0.8)
+    heatmap!(ax, x, y, Zg_boundary; colormap = reverse(cgrad(ColorSchemes.Reds)), colorrange = color_limits, alpha=1)
+    heatmap!(ax, x, y, Zg_null;     colormap = reverse(cgrad(ColorSchemes.Purples)), colorrange = color_limits, alpha=1)
+    heatmap!(ax, x, y, Zg_non_boundary; colormap = reverse(cgrad(ColorSchemes.Blues)), colorrange = color_limits, alpha=1)
 
     # === Plot CAB === #
 
@@ -687,6 +702,14 @@ Plots all activation boundaries for a 2D input network.
 """
 
 function plot_CAB_all(layer_sizes::Vector{Int}, neuron_layer::Int, neuron_index::Int, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true)
+    # --- Load File ---
+    if isnothing(epoch)
+        load_path = "data/partition_neuron_table.jlser"
+    else
+        load_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+    end
+    partition_neuron_table = deserialize(load_path)
+    
     # --- Figure Setup ---
     title_text = isnothing(epoch) ? latexstring("z^{[$neuron_layer]}_$neuron_index \\text{ with CAB}") : latexstring("z^{[$neuron_layer]}_{$neuron_index} \\text{ with CAB at epoch $epoch}")
     fig = Figure(size = (900, 600))
@@ -699,7 +722,7 @@ function plot_CAB_all(layer_sizes::Vector{Int}, neuron_layer::Int, neuron_index:
     )
 
     # --- Call shared plotting logic ---
-    plot_CAB_frame!(ax, neuron_layer, neuron_index, epoch)
+    plot_CAB_frame!(ax, neuron_layer, neuron_index, partition_neuron_table, epoch)
 
     # --- Legend for Layers (recomputed here for fig) ---
     colors = [get(ColorSchemes.turbid, i/(length(layer_sizes)-2)) for i in 0:(length(layer_sizes)-2)]
@@ -734,11 +757,9 @@ function plot_CAB_all(layer_sizes::Vector{Int}, neuron_layer::Int, neuron_index:
     return fig
 end
 
-function create_animation(layer_sizes::Vector{Int}, total_epoch::Int;
-                          output_path::String = "CAB_animation.mp4",
-                          framerate::Int = 10)
+function create_animation(layer_sizes::Vector{Int}, total_epoch::Int; output_path::String = "CAB_animation.mp4", framerate::Int = 10)
     # === Figure ===
-    fig = Figure(size = (1920, 1080))
+    fig = Figure(size = (1280, 720))
     rowgap!(fig.layout, 5)         # 5px vertical spacing
     colgap!(fig.layout, 5)         # 5px horizontal spacing
 
@@ -789,11 +810,12 @@ function create_animation(layer_sizes::Vector{Int}, total_epoch::Int;
     colsize!(fig.layout, 2, Relative(0.8))
 
     # === Animation Recording ===
-    record(fig, output_path, 0:(total_epoch-1); framerate = framerate) do epoch
+    record(fig, output_path, 0:total_epoch; framerate = framerate) do epoch
+        partition_neuron_table = deserialize(@sprintf("data/partition_neuron_table_%04d.jlser", epoch))
         for row in 1:length(layer_sizes)-1
             neuron_layer = length(layer_sizes) - row
             for neuron_index in 1:layer_sizes[neuron_layer+1]
-                plot_CAB_frame!(axes_grid[row][neuron_index], neuron_layer, neuron_index, epoch)
+                plot_CAB_frame!(axes_grid[row][neuron_index], neuron_layer, neuron_index, partition_neuron_table, epoch)
             end
         end
     end
@@ -826,7 +848,7 @@ function plot_partition_count(total_epochs::Int, neuron_layer::Union{Int, Nothin
         push!(boundary_counts, boundary_count)
     end
 
-    fig = Figure(resolution = (1000, 500))
+    fig = Figure(resolution = (1500, 500))
 
     ax1 = Axis(fig[1, 1], title = "Number of Partitions", xlabel = "Epoch", ylabel = "Partition Count")
     lines!(ax1, 0:total_epochs, partition_counts)
@@ -834,6 +856,8 @@ function plot_partition_count(total_epochs::Int, neuron_layer::Union{Int, Nothin
     ax2 = Axis(fig[1, 2], title = "Number of Boundary Partitions", xlabel = "Epoch", ylabel = "Boundary Partition Count")
     lines!(ax2, 0:total_epochs, boundary_counts)
     
+    ax3 = Axis(fig[1, 3], title = "Proportion of Boundary Partitions", xlabel = "Epoch", ylabel = "Boundary Partition Percentage")
+    lines!(ax3, 0:total_epochs, 100 .* boundary_counts ./ partition_counts)
     #Optional save
     if to_save
         save_path = "plot_store/partition_count.png"

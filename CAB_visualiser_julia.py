@@ -59,7 +59,7 @@ criterion = nn.MSELoss()
 steps_per_epoch = 5
 total_epochs = 500
 
-for epoch in range(total_epochs):
+for epoch in range(total_epochs + 1):
     for _ in range(steps_per_epoch):
         optimizer.zero_grad()
         outputs = model(X)
