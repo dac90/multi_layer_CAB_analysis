@@ -1,6 +1,6 @@
 module CAB_analysis
 
-# Import Packages
+# === Import Packages ===
 using PyCall
 using Serialization
 using LinearAlgebra
@@ -16,17 +16,17 @@ using ColorVectorSpace
 using ImageCore
 using FFMPEG
 
-# Export functions
+# === Export Functions ===
 export save_params, get_params, calculate_partition_simple, get_partition_simple, calculate_partition_tree, calculate_boundary_tree, get_partition_tree, calculate_partition_all, calculate_boundary_all, get_partition_all, plot_CAB_all, create_animation, plot_partition_count
 
-# A structure used when checking feasability
+# === Feasability Model Structure ===
 mutable struct FeasibilityModel
     model::Model
     x::Vector{VariableRef}
     epsilon::Float64
 end
 
-#Used to store partition data
+# === Partition Data Structure ===
 struct PartitionEntry
     phi::Vector{Float64}
     pattern::Vector{BitVector}
@@ -37,6 +37,7 @@ struct PartitionEntry
     tag::String
 end
 
+# === Save Network Parameters ===
 """
     save_params(model::PyObject, epoch::Union{Int, Nothing}::Union{Int, Nothing} = nothing, to_save = true) -> params::Dict{String, Any}
 
@@ -45,9 +46,9 @@ Given a PyTorch model (e.g. `torch.nn.Sequential`), save weight matrices and bia
 function save_params(model::PyObject, epoch::Union{Int, Nothing} = nothing, to_save = true)
     torch = pyimport("torch")
     params = Dict{String, Any}()
-    layer_index = 1
 
-    # Loop through layers 
+    # --- Collect Parameters ---
+    layer_index = 1
     for layer in model
         if pyisinstance(layer, torch.nn.Linear)
             params["W_$layer_index"] = Array(layer.weight.detach().numpy()) # Save weight matrix
@@ -56,7 +57,7 @@ function save_params(model::PyObject, epoch::Union{Int, Nothing} = nothing, to_s
         end
     end
 
-    # Optional file save
+    # --- Save File ---
     if to_save
         if isnothing(epoch)
             save_path = "data/params.jlser"
@@ -71,12 +72,14 @@ function save_params(model::PyObject, epoch::Union{Int, Nothing} = nothing, to_s
     return params
 end
 
+# === Get Network Parameters ===
 """
     get_params(epoch) -> params::Dict{String, Any}
 
 Deserializes the `.jlser` file at `path`, prints each entry's key, shape, and element type, and returns the dictionary for use in Python.
 """
-function get_params(epoch::Union{Int, Nothing} = nothing) 
+function get_params(epoch::Union{Int, Nothing} = nothing)
+    # --- Load File ---
     if isnothing(epoch)
         load_path = "data/params.jlser"
     else
@@ -84,8 +87,8 @@ function get_params(epoch::Union{Int, Nothing} = nothing)
     end
     params = deserialize(load_path)
 
-    # Sort to prevent random ordering
-    for k in sort(collect(keys(params)))
+    # --- Output Contents ---
+    for k in sort(collect(keys(params))) # Sort to prevent random ordering
         v = params[k]
         println("$k => value: ", v)
     end
@@ -163,7 +166,7 @@ function unwrap_network(pattern::Vector{BitVector}, epoch::Union{Int, Nothing} =
 end
 
 """
-    calculate_partition_simple(layer_sizes::Vector{Int}, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true) -> 
+    calculate_partition_simple(layer_sizes::Vector{Int}, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true) -> partitions::Dict{UInt128, PartitionEntry}()
 
 Calculates the CAB position vector in each partition.
 Performs a feasability test using linear programming to determine whether a partition is void.
@@ -180,23 +183,25 @@ function calculate_partition_simple(layer_sizes::Vector{Int}, epoch::Union{Int, 
         return FeasibilityModel(model, x, epsilon)
     end
 
-    fm1 = init_fm(layer_sizes[1])
-    fm2 = init_fm(layer_sizes[1]-1)
+    fm1 = init_fm(layer_sizes[1]) # LP Model for testing non-void partitions
+    fm2 = init_fm(layer_sizes[1]-1) # LP Model for testing boundary partitions
 
+    # === Feasability Model ===
     function LP_feasability(fm::FeasibilityModel, A::Matrix{Float64}, b::Vector{Float64}, pattern::Vector{BitVector})
+        # --- Orthant to be tested ---
         orthant = orthant = 2 .* Int.(collect(Iterators.flatten(pattern))) .- 1
         A_flipped = Diagonal(orthant) * A
         b_flipped = b .* orthant
-        # Add constraints: W_scaled * x + b_scaled >= epsilon (small positive)
+        
+        # --- Add Constraints ---
         epsilon = 1e-6
         con_refs = @constraint(fm.model, A_flipped * fm.x .+ b_flipped .>= epsilon)
 
+        # --- Test feasibility ---
         optimize!(fm.model)
         status = termination_status(fm.model)
-
-        # Delete constraints for next iteration
-        foreach(c -> delete(fm.model, c), con_refs)
-        return status == MOI.OPTIMAL || status == MOI.LOCALLY_SOLVED
+        foreach(c -> delete(fm.model, c), con_refs) # Clear Constraints
+        return status == MOI.OPTIMAL || status == MOI.LOCALLY_SOLVED # Return Boolean
     end
 
     partitions = Dict{UInt128, PartitionEntry}()
@@ -210,6 +215,7 @@ function calculate_partition_simple(layer_sizes::Vector{Int}, epoch::Union{Int, 
             if phi == [0.0, 0.0]
                 tag = "Null"
             else    # If non-void and non-null, perform a projection from the space of the CAB plane and repeat LP test to test for boundary region
+                # --- Test for Boundary Partition ---
                 Q, _ = qr([phi I])
                 phi_ortho = Q[:, 2:end]
                 W_tilde_proj = W_tilde * phi_ortho
@@ -549,8 +555,15 @@ Deserializes the `.jlser` file at `path`, prints each neuron's CAB position vect
 """
 
 function get_partition_all(epoch)
-    load_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+    # --- Load File ---
+    if isnothing(epoch)
+        load_path = "data/partition_neuron_table.jlser"
+    else
+        load_path = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
+    end
     partition_neuron_table = deserialize(load_path)
+
+    # --- Output Data ---
     for partition_neuron_layer in partition_neuron_table
         for partition_layer in partition_neuron_layer
             for k in sort(collect(keys(partition_layer)))
@@ -564,6 +577,7 @@ function get_partition_all(epoch)
 end
 
 function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
+    # --- Load File ---
     if isnothing(epoch)
         load_path = "data/partition_neuron_table.jlser"
     else
@@ -571,30 +585,32 @@ function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
     end
     partition_neuron_table = deserialize(load_path)
 
+    # --- Data Setup ---
     x = LinRange(-5, 5, 200)
     y = LinRange(-5, 5, 200)
     Xg = repeat(reshape(x, :, 1), 1, length(y))
     Yg = repeat(reshape(y, 1, :), length(x), 1)
     points = hcat(vec(Xg), vec(Yg))
+    points_T = points'
     mask = falses(size(points, 1))
     z = Vector{Float64}(undef, size(points, 1))
 
-    # Clear previous contents of the axis
+    # --- Clear Previous Plot ---
     empty!(ax.scene.plots)
     ax.title = isnothing(epoch) ? latexstring("z^{[$neuron_layer]}_$neuron_index \\text{ with CAB}") : latexstring("z^{[$neuron_layer]}_{$neuron_index} \\text{ with CAB at epoch $epoch}")
-    
+    println("Creating figure for epoch $epoch")
+
+    # === Plot Outputs === #
 
     color_limits = (-10, 10)
     colors = [get(ColorSchemes.turbid, i/(length(partition_neuron_table)-1)) for i in 0:(length(partition_neuron_table)-1)]
 
-    Zg              = fill(NaN, size(Xg))
     Zg_boundary     = fill(NaN, size(Xg))
     Zg_null         = fill(NaN, size(Xg))
     Zg_non_boundary = fill(NaN, size(Xg))
 
-    println("Creating figure for epoch $epoch")
-
-    for (_, partition) in partition_neuron_table[neuron_layer][neuron_index]
+    for (_, partition) in partition_neuron_table[neuron_layer][neuron_index] # For each partition in the chosen neuron
+        # --- Generate Mask ---
         fill!(mask, false)
         if isempty(partition.pattern) || isempty(partition.W_tilde) || isempty(partition.b_tilde)
             mask .= true
@@ -602,16 +618,16 @@ function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
             orthant = 2 .* Int.(reduce(vcat, partition.pattern)) .- 1
             W_tilde_flipped = Diagonal(orthant) * partition.W_tilde
             b_tilde_flipped = partition.b_tilde .* orthant
-            mask .= vec(all(W_tilde_flipped * points' .+ b_tilde_flipped .> 0, dims=1))
+            mask .= vec(all(W_tilde_flipped * points_T .+ b_tilde_flipped .> 0, dims=1))
         end
+
+        # --- Generate Outputs ---
         mul!(z, points, vec(partition.W_hat))
         z .+= partition.b_hat
 
+        # --- Add to Appropriate Type ---
         if partition.tag == "Boundary"
             Zg_boundary[mask] .= z[mask]
-            mul!(z, points, vec(partition.W_hat))
-            z .+= partition.b_hat
-            Zg[mask] .= z[mask]
         elseif partition.tag == "Null"
             Zg_null[mask] .= z[mask]
         else
@@ -619,30 +635,47 @@ function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
         end
     end
 
+    # --- Plot Heatmaps ---
     heatmap!(ax, x, y, Zg_boundary; colormap = reverse(cgrad(ColorSchemes.Reds)), colorrange = color_limits, alpha=0.8)
     heatmap!(ax, x, y, Zg_null;     colormap = reverse(cgrad(ColorSchemes.Purples)), colorrange = color_limits, alpha=0.8)
     heatmap!(ax, x, y, Zg_non_boundary; colormap = reverse(cgrad(ColorSchemes.Blues)), colorrange = color_limits, alpha=0.8)
-    contour!(ax, x, y, Zg; levels=[0], linewidth=2, color=colors[neuron_layer])
 
-    for (layer_idx, partition_neuron_layer) in enumerate(partition_neuron_table[1:neuron_layer-1])
-        for partition_neuron in partition_neuron_layer
-            Zg .= NaN
-            for (_, partition) in partition_neuron
-                if partition.tag == "Boundary"
-                    if isempty(partition.pattern)
-                        mask .= true
-                    else
-                        orthant = 2 .* Int.(reduce(vcat, partition.pattern)) .- 1
-                        W_tilde_flipped = Diagonal(orthant) * partition.W_tilde
-                        b_tilde_flipped = partition.b_tilde .* orthant
-                        mask .= vec(all(W_tilde_flipped * points' .+ b_tilde_flipped .> 0, dims=1))
+    # === Plot CAB === #
+
+    spacing = 0.05 # = step(LinRange(-5, 5, 200))
+    max_length = 7.5  # = √2 * 5
+
+    for (i, partition_neuron_layer) in enumerate(partition_neuron_table[1:neuron_layer]) # Each layer
+        for (j, partition_neuron) in enumerate(partition_neuron_layer) # Each neuron
+            if i != neuron_layer || j == neuron_index # Only plot one top-layer neuron
+                for (_, partition) in partition_neuron # Each partition
+                    if partition.tag == "Boundary"
+                        # --- Generate CAB Points ---
+                        perp_phi = vec([-partition.phi[2], partition.phi[1]])
+                        CAB_draw_step = perp_phi / norm(perp_phi)
+                        CAB_step_range = vec(collect(-max_length:spacing:max_length))
+                        CAB_points = (CAB_step_range * CAB_draw_step') .+ partition.phi'
+                        
+                        # --- Mask for Partition
+                        CAB_points_mask = all((-5 .<= CAB_points .<= 5), dims=2)[:]
+                        if !isempty(partition.pattern)
+                            orthant = 2 .* Int.(reduce(vcat, partition.pattern)) .- 1
+                            W_tilde_flipped = Diagonal(orthant) * partition.W_tilde
+                            b_tilde_flipped = partition.b_tilde .* orthant
+                            CAB_points_mask .&= vec(all(W_tilde_flipped * CAB_points' .+ b_tilde_flipped .> 0, dims = 1))
+                        end
+
+                        # --- Plot ---
+                        if any(CAB_points_mask)
+                            first_idx = findfirst(CAB_points_mask)
+                            last_idx = findlast(CAB_points_mask)
+                            xs = [CAB_points[first_idx, 1], CAB_points[last_idx, 1]]
+                            ys = [CAB_points[first_idx, 2], CAB_points[last_idx, 2]]
+                            lines!(ax, xs, ys; linewidth = 2, color = colors[i])
+                        end
                     end
-                    mul!(z, points, vec(partition.W_hat))
-                    z .+= partition.b_hat
-                    Zg[mask] .= z[mask]
                 end
             end
-            contour!(ax, x, y, Zg; levels=[0], linewidth=2, color=colors[layer_idx])
         end
     end
 end

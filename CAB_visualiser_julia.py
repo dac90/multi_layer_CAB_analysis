@@ -56,8 +56,8 @@ optimizer = optim.Adam(model.parameters(), lr=0.01)
 criterion = nn.MSELoss()
 
 # Training loop
-steps_per_epoch = 1
-total_epochs = 2000
+steps_per_epoch = 5
+total_epochs = 500
 
 for epoch in range(total_epochs):
     for _ in range(steps_per_epoch):
@@ -79,19 +79,6 @@ for epoch in range(total_epochs):
     # Calculate CAB All (For all neurons)
     CAB_analysis.calculate_partition_all(n, epoch)  # Pass hidden sizes
     #CAB_analysis.get_partition_all(epoch)
-
-
-# Plot CAB
-
-CAB_analysis.plot_CAB_all(n, len(n)-1, 1, 11)
-CAB_analysis.plot_CAB_all(n, len(n)-2, 1, 21)
-CAB_analysis.plot_CAB_all(n, len(n)-2, 2, 22)
-CAB_analysis.plot_CAB_all(n, len(n)-2, 3, 23)
-CAB_analysis.plot_CAB_all(n, len(n)-2, 4, 24)
-CAB_analysis.plot_CAB_all(n, len(n)-3, 1, 31)
-CAB_analysis.plot_CAB_all(n, len(n)-3, 2, 32)
-CAB_analysis.plot_CAB_all(n, len(n)-3, 3, 33)
-CAB_analysis.plot_CAB_all(n, len(n)-3, 4, 34)
 
 CAB_analysis.create_animation(n, total_epochs)
 
