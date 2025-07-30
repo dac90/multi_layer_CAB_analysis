@@ -1,6 +1,6 @@
-#import torch
-#import torch.nn as nn
-#import torch.optim as optim
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import numpy as np
 
 import os
@@ -17,7 +17,7 @@ from julia import CAB_analysis  # Now import the module after inclusion
 n = [2, 4, 4, 1]
 m = 1000
 
-'''
+
 device = torch.device("cpu")
 print("Using", device)
 
@@ -54,12 +54,11 @@ model = FlexibleReLUNetwork(n).to(device).double()
 # Optimizer and loss
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 criterion = nn.MSELoss()
-'''
-# Training loop
-steps_per_epoch = 10
-total_epochs = 40
 
-'''
+# Training loop
+steps_per_epoch = 1
+total_epochs = 2000
+
 for epoch in range(total_epochs):
     for _ in range(steps_per_epoch):
         optimizer.zero_grad()
@@ -93,9 +92,7 @@ CAB_analysis.plot_CAB_all(n, len(n)-3, 1, 31)
 CAB_analysis.plot_CAB_all(n, len(n)-3, 2, 32)
 CAB_analysis.plot_CAB_all(n, len(n)-3, 3, 33)
 CAB_analysis.plot_CAB_all(n, len(n)-3, 4, 34)
-'''
+
 CAB_analysis.create_animation(n, total_epochs)
 
 CAB_analysis.plot_partition_count(total_epochs)
-
-CAB_analysis.create_CAB_dashboard(n, total_epochs)

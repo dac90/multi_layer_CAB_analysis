@@ -16,9 +16,10 @@ using ColorVectorSpace
 using ImageCore
 using FFMPEG
 
+# Export functions
 export save_params, get_params, calculate_partition_simple, get_partition_simple, calculate_partition_tree, calculate_boundary_tree, get_partition_tree, calculate_partition_all, calculate_boundary_all, get_partition_all, plot_CAB_all, create_animation, plot_partition_count
 
-# Used in the LP feasability test
+# A structure used when checking feasability
 mutable struct FeasibilityModel
     model::Model
     x::Vector{VariableRef}
@@ -37,24 +38,25 @@ struct PartitionEntry
 end
 
 """
-    save_params(model::PyObject, epoch=nothing)
+    save_params(model::PyObject, epoch::Union{Int, Nothing}::Union{Int, Nothing} = nothing, to_save = true) -> params::Dict{String, Any}
 
-Given a PyTorch model (e.g. `torch.nn.Sequential`), save weight matrices and bias vectors to '.jlser' file at 'path'.
+Given a PyTorch model (e.g. `torch.nn.Sequential`), save weight matrices and bias vectors to a '.jlser' file at 'path' with optional epoch, if to_save is true 
 """
-function save_params(model::PyObject, epoch=nothing, to_save = true)
+function save_params(model::PyObject, epoch::Union{Int, Nothing} = nothing, to_save = true)
     torch = pyimport("torch")
     params = Dict{String, Any}()
     layer_index = 1
 
-    # Loop through layers
+    # Loop through layers 
     for layer in model
         if pyisinstance(layer, torch.nn.Linear)
-            params["W_$layer_index"] = Array(layer.weight.detach().numpy())
-            params["b_$layer_index"] = Array(layer.bias.detach().numpy())
+            params["W_$layer_index"] = Array(layer.weight.detach().numpy()) # Save weight matrix
+            params["b_$layer_index"] = Array(layer.bias.detach().numpy()) # Save bias vector
             layer_index += 1
         end
     end
 
+    # Optional file save
     if to_save
         if isnothing(epoch)
             save_path = "data/params.jlser"
@@ -72,11 +74,14 @@ end
 """
     get_params(epoch) -> params::Dict{String, Any}
 
-Deserializes the `.jlser` file at `path`, prints each entry's key, shape, and element type,
-and returns the dictionary for use in Python.
+Deserializes the `.jlser` file at `path`, prints each entry's key, shape, and element type, and returns the dictionary for use in Python.
 """
-function get_params(epoch) 
-    load_path = @sprintf("data/params_%04d.jlser", epoch)
+function get_params(epoch::Union{Int, Nothing} = nothing) 
+    if isnothing(epoch)
+        load_path = "data/params.jlser"
+    else
+        load_path = @sprintf("data/params_%04d.jlser", epoch)
+    end
     params = deserialize(load_path)
 
     # Sort to prevent random ordering
@@ -89,13 +94,41 @@ function get_params(epoch)
 end
 
 """
-    unwrap_affine(pattern::Vector{BitVector}, epoch)
+    all_activation_patterns(sizes::Vector{Int}) -> Iterator{Vector{BitVector}}
 
-Given params and a list of ReLU activation masks, computes the affine function `f(x) = A * x + b`
-for that region.
+Generates all possible ReLU activation patterns for each layer size.
+Returns an iterator of activation patterns as Vector{BitVector}.
 """
-function unwrap_affine(pattern::Vector{BitVector}, epoch)
-    load_path = @sprintf("data/params_%04d.jlser", epoch)
+function all_activation_patterns(layer_sizes::Vector{Int})
+    function binary_patterns(n::Int) # Returns a Vector{Bitvectors}, containing all possible length n binary combinations
+        m = 2^n
+        patterns = Vector{BitVector}(undef, m)
+        for i in 0:m-1
+            bv = falses(n)
+            for j in 1:n
+                bv[j] = (i >> (n-j)) & 1 == 1
+            end
+            patterns[i+1] = bv
+        end
+        return patterns
+    end
+
+    pattern_lists = [binary_patterns(n) for n in layer_sizes] # A list of Vector{Bitvectors} of activation patterns at each layer
+    return (collect(p) for p in Iterators.product(pattern_lists...)) # The the options at each layer are combined, and turned into an iterator
+end
+
+"""
+    unwrap_network(pattern::Vector{BitVector}, epoch) -> W_hat::Matrix, b_hat::Vector, W_tilde:Matrix, b_tilde::Matrix
+
+Given params and a relu activation pattern, computes the affine function `f(x) = W_hat * x + b_hat
+for that region, as well as W_tilde and b_tilde, which output hidden layer pre-activations.
+"""
+function unwrap_network(pattern::Vector{BitVector}, epoch::Union{Int, Nothing} = nothing)
+    if isnothing(epoch)
+        load_path = "data/params.jlser"
+    else
+        load_path = @sprintf("data/params_%04d.jlser", epoch)
+    end
     params = deserialize(load_path)
 
     L = size(pattern)[1] + 1  # Total layers
@@ -129,42 +162,16 @@ function unwrap_affine(pattern::Vector{BitVector}, epoch)
     return W_hat, b_hat, W_tilde, b_tilde
 end
 
-
-# I am considering improving my data structuring so the below may become redundant.
 """
-    all_activation_patterns(sizes::Vector{Int}) -> Iterator
-
-Generates all possible ReLU activation patterns for each layer size.
-Returns an iterator of activation patterns as `Vector{BitVector}.
-"""
-function all_activation_patterns(sizes::Vector{Int})
-    function binary_patterns(n::Int)
-        m = 2^n
-        patterns = Vector{BitVector}(undef, m)
-        for i in 0:m-1
-            bv = falses(n)
-            for j in 1:n
-                bv[j] = (i >> (n-j)) & 1 == 1
-            end
-            patterns[i+1] = bv
-        end
-        return patterns
-    end
-
-    pattern_lists = [binary_patterns(n) for n in sizes]
-    return (collect(p) for p in Iterators.product(pattern_lists...))
-end
-
-"""
-    calculate_CAB_LP(layer_sizes::Vector{Int}, epoch=nothing)
+    calculate_partition_simple(layer_sizes::Vector{Int}, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true) -> 
 
 Calculates the CAB position vector in each partition.
 Performs a feasability test using linear programming to determine whether a partition is void.
 Subsequently performs a projection and another feasability test to determine whether a partition contains a boundary or not.
-Saves all results as a in a FeasibilityModel struct in the '.jlser' file at 'path'.
+Saves all results as a in a FeasibilityModel struct in the '.jlser' file.
 """
 
-function calculate_partition_simple(layer_sizes::Vector{Int}, epoch=nothing, to_save::Bool = true)
+function calculate_partition_simple(layer_sizes::Vector{Int}, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true)
 
     function init_fm(x_size::Int; solver=HiGHS.Optimizer, epsilon=1e-6)
         model = Model(solver)
@@ -177,7 +184,6 @@ function calculate_partition_simple(layer_sizes::Vector{Int}, epoch=nothing, to_
     fm2 = init_fm(layer_sizes[1]-1)
 
     function LP_feasability(fm::FeasibilityModel, A::Matrix{Float64}, b::Vector{Float64}, pattern::Vector{BitVector})
-        # Input variables
         orthant = orthant = 2 .* Int.(collect(Iterators.flatten(pattern))) .- 1
         A_flipped = Diagonal(orthant) * A
         b_flipped = b .* orthant
@@ -196,7 +202,7 @@ function calculate_partition_simple(layer_sizes::Vector{Int}, epoch=nothing, to_
     partitions = Dict{UInt128, PartitionEntry}()
 
     for pattern in all_activation_patterns(layer_sizes[2:end-1])
-        W_hat, b_hat, W_tilde, b_tilde = unwrap_affine(pattern, epoch)
+        W_hat, b_hat, W_tilde, b_tilde = unwrap_network(pattern, epoch)
         phi = -pinv(W_hat) * b_hat
         nonvoid_bool = LP_feasability(fm1, W_tilde, b_tilde, pattern)
         tag = "N/A"
@@ -240,7 +246,7 @@ Deserializes the `.jlser` file at `path`, prints each partition's CAB position v
 """
 function get_partition_simple(epoch)
     load_path = @sprintf("data/partitions_%04d.jlser", epoch)
-    partitions = deserialize(path)
+    partitions = deserialize(load_path)
 
     for k in sort(collect(keys(partitions)))
         v = partitions[k]
@@ -251,12 +257,12 @@ function get_partition_simple(epoch)
 end
 
 """
-    calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch=nothing)
+    calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch::Union{Int, Nothing} = nothing)
 
 Calculates the CAB of a Neuron in all lower layers, latent and otherwise. Ignores void partitions effectively
 """
 
-function calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch = nothing, to_save::Bool = true)
+function calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true)
 
     function init_fm(x_size::Int; solver=HiGHS.Optimizer, epsilon=1e-6)
         model = Model(solver)
@@ -359,12 +365,12 @@ function calculate_partition_tree(layer_sizes::Vector{Int}, neuron_index::Int, e
 end
 
 """
-    calculate_boundary_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch = nothing)
+    calculate_boundary_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch::Union{Int, Nothing} = nothing)
 
 Calculates the CAB of a Neuron in all lower layers, latent and otherwise. Ignores void and non-boundary partitions effectively
 """
 
-function calculate_boundary_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch = nothing, to_save::Bool=true)
+function calculate_boundary_tree(layer_sizes::Vector{Int}, neuron_index::Int, epoch::Union{Int, Nothing} = nothing, to_save::Bool=true)
 
     function init_fm(x_size::Int; solver=HiGHS.Optimizer, epsilon=1e-6)
         model = Model(solver)
@@ -479,7 +485,7 @@ end
 Calculates the partitions in the input layer only, but it does so for all neurons in the network
 """
 
-function calculate_partition_all(layer_sizes::Vector{Int}, epoch = nothing, to_save::Bool = true)
+function calculate_partition_all(layer_sizes::Vector{Int}, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true)
     L = size(layer_sizes)[1] - 1
     partition_neuron_table = Vector{Vector{Dict{UInt128, PartitionEntry}}}(undef, L)
     for l in 1:L
@@ -510,7 +516,7 @@ end
 Calculates the boundary partitions in the input layer only, but it does so for all neurons in the network
 """
 
-function calculate_boundary_all(layer_sizes::Vector{Int}, epoch = nothing, to_save::Bool = true)
+function calculate_boundary_all(layer_sizes::Vector{Int}, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true)
     L = size(layer_sizes)[1] - 1
     partition_neuron_table = Vector{Vector{Dict{UInt128, PartitionEntry}}}(undef, L)
     for l in 1:L
@@ -575,7 +581,7 @@ function plot_CAB_frame!(ax::Axis, neuron_layer::Int, neuron_index::Int, epoch)
 
     # Clear previous contents of the axis
     empty!(ax.scene.plots)
-    ax.title = isnothing(epoch) ? latexstring("z^{[$neuron_layer]}_$neuron_index \\text{ with CAB}") : latexstring("z^{[$neuron_layer]}_{$neuron_index} \\text{ with CAB} at epoch $epoch}")
+    ax.title = isnothing(epoch) ? latexstring("z^{[$neuron_layer]}_$neuron_index \\text{ with CAB}") : latexstring("z^{[$neuron_layer]}_{$neuron_index} \\text{ with CAB at epoch $epoch}")
     
 
     color_limits = (-10, 10)
@@ -647,9 +653,9 @@ end
 Plots all activation boundaries for a 2D input network.
 """
 
-function plot_CAB_all(layer_sizes::Vector{Int}, neuron_layer::Int, neuron_index::Int, epoch = nothing, to_save::Bool = true)
+function plot_CAB_all(layer_sizes::Vector{Int}, neuron_layer::Int, neuron_index::Int, epoch::Union{Int, Nothing} = nothing, to_save::Bool = true)
     # --- Figure Setup ---
-    title_text = isnothing(epoch) ? L"z^{[$neuron_layer]}_$neuron_index with CAB" : L"Pre-activation z^{[$neuron_layer]}_$neuron_index with CAB at (epoch = $epoch)"
+    title_text = isnothing(epoch) ? latexstring("z^{[$neuron_layer]}_$neuron_index \\text{ with CAB}") : latexstring("z^{[$neuron_layer]}_{$neuron_index} \\text{ with CAB at epoch $epoch}")
     fig = Figure(size = (900, 600))
     ax = Axis(fig[1, 1],
         title = title_text,
@@ -699,61 +705,58 @@ function create_animation(layer_sizes::Vector{Int}, total_epoch::Int;
                           output_path::String = "CAB_animation.mp4",
                           framerate::Int = 10)
     # === Figure ===
-    fig = Figure(size = (1400, 1000), figure_padding=5)
-    Label(fig[0, 2], "Pre-activations and CAB's of all neurons", fontsize = 28, tellwidth = false, tellheight = true)
-
-    # Reduce gaps between rows and columns
+    fig = Figure(size = (1920, 1080))
     rowgap!(fig.layout, 5)         # 5px vertical spacing
     colgap!(fig.layout, 5)         # 5px horizontal spacing
 
-    # === Store Axes in Grid=== 
-    axes_grid = Vector{Vector{Axis}}(undef, length(layer_sizes)-1)
+    # === Title ===
+    Label(fig[0, 2], "Pre-activations and CAB's of all neurons", fontsize = 28, tellwidth = false, tellheight = true)
+    rowsize!(fig.layout, 0, Auto(false))
 
-    # --- Legend for Layers (recomputed here for fig) ---
+    # === Legend for Layers ===
     colors = [get(ColorSchemes.turbid, i/(length(layer_sizes)-2)) for i in 0:(length(layer_sizes)-2)]
     dummy_axis = Axis(fig.scene)  # Create axis not added to layout
     legend_lines = [lines!(dummy_axis, [NaN], [NaN], color=col, linewidth=2) for col in colors]
-    Legend(fig[1, 1], legend_lines, ["Layer $i" for i in 1:length(colors)]; title = "Layers")
-    colsize!(fig.layout, 1, 100)
+    Legend(fig[1, 1], legend_lines, ["Layer $i" for i in 1:length(colors)]; title = "CAB Legend")
+    colsize!(fig.layout, 1, Auto(false))
 
-    # === Top Layer=== #
-    axes_grid[1] = Vector{Axis}(undef, layer_sizes[end])
-    top_grid = fig[1, 2] = GridLayout()
-    colgap!(top_grid, 5)
-    rowsize!(fig.layout, 1, Relative(0.4))
-
-    for neuron_index in 1:layer_sizes[end]
-            axes_grid[1][neuron_index] = Axis(top_grid[1, neuron_index], aspect = DataAspect())
-            colsize!(top_grid, neuron_index, Auto())
-        end
-    # === Colorbars=== 
+    # === Colorbars === 
     subgrid = fig[1, 3] = GridLayout()
-    colsize!(fig.layout, 3, 100)
-    Colorbar(subgrid[1, 1], colormap = reverse(cgrad(ColorSchemes.Reds)),
-             limits = (-10, 10), label = "Boundary", width = 20, height = Relative(0.9))
-    Colorbar(subgrid[1, 2], colormap = reverse(cgrad(ColorSchemes.Purples)),
-             limits = (-10, 10), label = "Null", width = 20, height = Relative(0.9))
-    Colorbar(subgrid[1, 3], colormap = reverse(cgrad(ColorSchemes.Blues)),
-             limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
+    colgap!(subgrid, 2)
 
-    for row in 2:length(layer_sizes)-1
+    function make_colorbar(parent, cmap, lbl)
+        Colorbar(parent, colormap = reverse(cgrad(cmap)), limits = (-10, 10), label = lbl, width = 10, height = Relative(0.9), flip_vertical_label = true)
+    end
+
+    make_colorbar(subgrid[1, 1], ColorSchemes.Reds, "Boundary")
+    make_colorbar(subgrid[1, 2], ColorSchemes.Purples, "Null")
+    make_colorbar(subgrid[1, 3], ColorSchemes.Blues, "Non-Boundary")
+
+    colsize!(subgrid, 1, Auto(false))
+    colsize!(subgrid, 2, Auto(false))
+    colsize!(subgrid, 3, Auto(false))
+    colsize!(fig.layout, 3, Auto(false))
+
+    # === Plots ===
+    axes_grid = Vector{Vector{Axis}}(undef, length(layer_sizes)-1)
+    for row in 1:length(layer_sizes)-1
         neuron_layer = length(layer_sizes) - row
-
-        row_grid = fig[row, 2] = GridLayout()
+        
+        row_grid = fig[row, 2] = GridLayout()  
         colgap!(row_grid, 5)
-        rowsize!(fig.layout, row, Auto())
-        axes_grid[row] = Vector{Axis}(undef, layer_sizes[neuron_layer + 1])
+        rowsize!(fig.layout, row, Auto(false))
 
+        axes_grid[row] = Vector{Axis}(undef, layer_sizes[neuron_layer + 1])
         for neuron_index in 1:layer_sizes[neuron_layer+1]
             axes_grid[row][neuron_index] = Axis(row_grid[1, neuron_index], aspect = DataAspect())
-            # Make columns uniform width
-            colsize!(row_grid, neuron_index, Auto())
+            colsize!(row_grid, neuron_index, Auto(false))
         end
     end
+    rowsize!(fig.layout, 1, Relative(0.4))
+    colsize!(fig.layout, 2, Relative(0.8))
 
     # === Animation Recording ===
     record(fig, output_path, 0:(total_epoch-1); framerate = framerate) do epoch
-        # Update all plots
         for row in 1:length(layer_sizes)-1
             neuron_layer = length(layer_sizes) - row
             for neuron_index in 1:layer_sizes[neuron_layer+1]
@@ -762,93 +765,48 @@ function create_animation(layer_sizes::Vector{Int}, total_epoch::Int;
         end
     end
 
-    println("Animation saved to $output_path")
+    println("Animation saved to $output_path") # Note that things are saved live in the previous block
 end
 
-function create_CAB_dashboard(layer_sizes::Vector{Int}, total_epoch::Int)
-    fig = Figure(resolution = (1000, 700))
-    ax = Axis(fig[1, 1],
-              title = "Analytical CAB",
-              xlabel = L"x_1", ylabel = L"x_2",
-              aspect = DataAspect(), limits = ((-5, 5), (-5, 5)))
+"""
+    plot_partition_count(total_epochs::Int, to_save = true) -> fig with 2 plots
 
-    # Colorbars
-    subgrid = fig[1, 2] = GridLayout()
-    Colorbar(subgrid[1, 1], colormap = reverse(cgrad(ColorSchemes.Reds)),
-             limits = (-10, 10), label = "Boundary", width = 20, height = Relative(0.9))
-    Colorbar(subgrid[1, 2], colormap = reverse(cgrad(ColorSchemes.Purples)),
-             limits = (-10, 10), label = "Null", width = 20, height = Relative(0.9))
-    Colorbar(subgrid[1, 3], colormap = reverse(cgrad(ColorSchemes.Blues)),
-             limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
-
-    # UI elements
-    slider = Slider(fig[2, 1], range = 0:total_epoch-1, startvalue=0)
-    play_button = Button(fig[2, 2], label="▶ Play")
-
-    current_epoch = Observable(0)
-    playing = Observable(false)
-
-    # When slider moves, update current_epoch
-    on(slider.value) do val
-        current_epoch[] = Int(val)
-        plot_CAB_frame!(ax, 0, 1, current_epoch[])
-    end
-
-    # Button toggles play/pause
-    on(play_button.clicks) do _
-        playing[] = !playing[]
-        play_button.label[] = playing[] ? "⏸ Pause" : "▶ Play"
-    end
-
-    # Animation loop (as a task)
-    @async begin
-        while isopen(fig)
-            if playing[]
-                next_epoch = (current_epoch[] + 1) % total_epoch
-                current_epoch[] = next_epoch
-                slider.value[] = next_epoch
-                plot_CAB_frame!(ax, 0, 1, current_epoch[])
-            end
-            sleep(0.2)  # control animation speed
-        end
-    end
-
-    plot_CAB_frame!(ax, 0, 1, neuron_index, current_epoch[]) # Initial plot
-    display(fig)
-    return fig
-end
-
-function plot_partition_count(total_epochs)
-    first_elem_counts = Int[]
+    One plot of number of partitions of the input space at each epoch, another of the number of boundary partitions at each epoch
+"""
+function plot_partition_count(total_epochs::Int, neuron_layer::Union{Int, Nothing} = nothing, neuron_index::Union{Int, Nothing} = nothing, to_save = true)
+    partition_counts = Int[]
     boundary_counts = Int[]
 
     for epoch in 0:total_epochs
         file = @sprintf("data/partition_neuron_table_%04d.jlser", epoch)
-        if isfile(file)
-            data = deserialize(file)
+        data = deserialize(file)
 
-            # The vector that is the first element
-            first_elem = data[1]
-            push!(first_elem_counts, length(first_elem))
-
-            # Count how many elements have .Tag == "Boundary"
-            boundary_count = count(x -> getfield(x, :Tag, nothing) == "Boundary", first_elem)
-            push!(boundary_counts, boundary_count)
+        if isnothing(neuron_layer) || isnothing(neuron_index)
+            partitions = data[end][1] # Topmost neuron
         else
-            @warn "File not found: $file"
-            push!(first_elem_counts, NaN)
-            push!(boundary_counts, NaN)
+            partitions = data[neuron_layer][neuron_index] # Chosen partition
         end
+
+        push!(partition_counts, length(partitions)) # Count Partitions
+
+        boundary_count = count(partition -> partition.tag == "Boundary", values(partitions)) # Count Boundary Partitions
+        push!(boundary_counts, boundary_count)
     end
 
     fig = Figure(resolution = (1000, 500))
 
-    ax1 = Axis(fig[1, 1], title = "Size of First Element", xlabel = "Epoch", ylabel = "Count")
-    lines!(ax1, 0:total_epochs, first_elem_counts)
+    ax1 = Axis(fig[1, 1], title = "Number of Partitions", xlabel = "Epoch", ylabel = "Partition Count")
+    lines!(ax1, 0:total_epochs, partition_counts)
 
-    ax2 = Axis(fig[1, 2], title = "Boundary Tags", xlabel = "Epoch", ylabel = "Boundary Count")
+    ax2 = Axis(fig[1, 2], title = "Number of Boundary Partitions", xlabel = "Epoch", ylabel = "Boundary Partition Count")
     lines!(ax2, 0:total_epochs, boundary_counts)
-
+    
+    #Optional save
+    if to_save
+        save_path = "plot_store/partition_count.png"
+        println("Saving Partition Count plot to $save_path")
+        save(save_path, fig)
+    end
     return fig
 end
 
