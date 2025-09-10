@@ -44,8 +44,11 @@ function build_network(layer_sizes::Vector{Int}; normalization::Union{Nothing,St
         if i == length(layer_sizes)
             push!(layers, Dense(in_dim, out_dim, identity))
         elseif i == length(layer_sizes) - 1 && normalization=="layernorm"
-            push!(layers, Dense(in_dim, out_dim, identity))
+            push!(layers, Dense(in_dim, out_dim, relu))
             push!(layers, LayerNorm(out_dim, relu))
+        elseif i == length(layer_sizes) - 1 && normalization=="batchnorm"
+            push!(layers, Dense(in_dim, out_dim, relu))
+            push!(layers, BatchNorm(out_dim, relu))
         else
             push!(layers, Dense(in_dim, out_dim, relu))
         end
@@ -83,7 +86,7 @@ save("plot_store/moons_plot.png", f)
 # ----------------------------
 # Build model & optimizer
 # ----------------------------
-n = [2, 4, 4, 1]
+n = [2, 3, 1]
 model = build_network(n, normalization = "layernorm")
 loss_fn(m, x, y) = logitbinarycrossentropy(m(x), y)
 opt = ADAM(0.01)
@@ -92,32 +95,31 @@ opt_state = Flux.setup(opt, model)
 # ----------------------------
 # Training loop
 # ----------------------------
-epochs_per_frame = 10
-total_frames = 50
+epochs_per_frame = 1000
+total_frames = 10
 data = [(X_tensor, Y_tensor)]  # single batch
 model_snapshots = Flux.Chain[]
+
 for frame in 0:total_frames
     for epoch in 1:epochs_per_frame
         Flux.train!(loss_fn, model, data, opt_state)
     end
     println("Frame $frame, Loss: ", loss_fn(model, X_tensor, Y_tensor))
-
-    # Save params
     push!(model_snapshots, deepcopy(model))
 
     # CAB analysis
-    #CAB_analysis.calculate_CAB_partition_tree(model, n, 1, frame)
-    #CAB_analysis.calculate_CAB_neuron_table(model, n, frame)
+    #CAB_analysis.calculate_quadratic_CAB_partition_tree(model, 3, 1, frame)
+    CAB_analysis.calculate_quadratic_CAB_neuron_table(model, frame)
 end
 
 # ----------------------------
 # CAB_analysis visualization
 # ----------------------------
-#.get_CAB_partition_tree(100)
-#CAB_analysis.plot_CAB(n, 3, 1, 100)
-CAB_analysis.plot_empirical_CAB(model, 3, 1, 40)
+#CAB_analysis.get_CAB_partition_tree(100)
+CAB_analysis.plot_quadratic_CAB(model_snapshots, 3, 1, 1)
+CAB_analysis.plot_empirical_CAB(model_snapshots, 3, 1, 1)
 
-#CAB_analysis.create_animation(n, total_frames)
+CAB_analysis.create_quadratic_animation(model_snapshots, total_frames)
 #CAB_analysis.create_animation_2(n, total_frames)
 CAB_analysis.create_empirical_animation(model_snapshots, total_frames)
 #CAB_analysis.plot_partition_count(total_frames)

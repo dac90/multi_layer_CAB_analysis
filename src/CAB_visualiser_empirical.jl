@@ -24,8 +24,9 @@ struct EmpiricalGrid
 end
 
 const EMPIRICAL_GRID = let
-    x = LinRange(-5, 5, 100)
-    y = LinRange(-5, 5, 100)
+    res = 500
+    x = LinRange(-5, 5, 500)
+    y = LinRange(-5, 5, 500)
     Xg = repeat(reshape(x, :, 1), 1, length(y))
     Yg = repeat(reshape(y, 1, :), length(x), 1)
     points = hcat(vec(Xg), vec(Yg))
@@ -34,7 +35,7 @@ const EMPIRICAL_GRID = let
 end
 
 # Get the output size of each layer (only Dense / LayerNorm / BatchNorm)
-function get_n(model::Flux.Chain, input_dim::Int)
+function get_empirical_n(model::Flux.Chain, input_dim::Int)
     n = [input_dim]
     current_dim = input_dim
     
@@ -53,26 +54,24 @@ end
 # ─────────────────────────────
 # Get pre-activations for each layer
 # ─────────────────────────────
-function get_pre_activations(model::Flux.Chain, X::Matrix{Float64})
+function get_pre_activations(model::Flux.Chain, a::Matrix{Float64})
     pre_activations = Vector{Dict}()  # start empty
-    a = X
-    i = 1
-
-    while i <= length(model)
-        layer = model[i]
+    for layer in model
         if layer isa Dense
             z = layer.weight * a .+ layer.bias
-            a_out = layer.σ.(z)
+            a = layer.σ.(z)
+        elseif layer isa BatchNorm
+            norm_a = (a .- layer.:μ) ./ sqrt.(layer.:σ² .+ layer.ϵ)
+            z = layer.:γ .* norm_a .+ layer.:β
+            a = layer.λ.(z)
         elseif layer isa LayerNorm
-            mean_a = mean(a; dims=1)
-            var_a = mean((a .- mean_a).^2; dims=1)
-            norm_a = (a .- mean_a) ./ sqrt.(var_a .+ layer.ϵ)
-            z = layer.:diag.scale .* norm_a .+ layer.:diag.bias
-            a_out = layer.λ.(z)
+            layer_mean_a = mean(a; dims=1)
+            layer_var_a = mean((a .- layer_mean_a).^2; dims=1)
+            norm_a = (a .- layer_mean_a) ./ sqrt.(layer_var_a .+ layer.ϵ)
+            z = (layer.:diag.scale .* norm_a) .+ layer.:diag.bias
+            a = layer.λ.(z)
         end
-        push!(pre_activations, Dict(:z => z, :a => a_out))
-        a = a_out
-        i += 1
+        push!(pre_activations, Dict(:z => z, :a => a))
     end
     return pre_activations
 end
@@ -97,10 +96,11 @@ function plot_empirical_frame!(ax::Axis, pre_activations::Vector{Dict}, neuron_l
     ax.xlabel = latexstring("a^{[0]}_1")
     ax.ylabel = latexstring("a^{[0]}_2")
     
-    println("Creating Figure for Neuron Layer: $neuron_layer, Neuron Index: $neuron_index, Frame: $frame")
+    #println("Creating Figure for Neuron Layer: $neuron_layer, Neuron Index: $neuron_index, Frame: $frame")
 
     # Heatmap
-    heatmap!(ax, x, y, Zg; colormap = reverse(cgrad(ColorSchemes.Blues)), colorrange = (-10,10), alpha = 1)
+    max_Zg = maximum(abs.(Zg))
+    heatmap!(ax, x, y, Zg; colormap = reverse(cgrad(ColorSchemes.broc)), colorrange = (-max_Zg, max_Zg), alpha = 1)
 
     # 0-contours for this + all lower neurons
     L = length(pre_activations)
@@ -110,13 +110,14 @@ function plot_empirical_frame!(ax::Axis, pre_activations::Vector{Dict}, neuron_l
             if i != neuron_layer || j == neuron_index
                 z_lower = pre_activations[i][:z][j, :]
                 Zg_lower = reshape(z_lower, grid_size)
-                contour!(ax, x, y, Zg_lower; levels=[0.0], linewidth=2, color=colors[i])
+                #contour!(ax, x, y, Zg_lower; levels=[0.0], linewidth=2, color=colors[i])
             end
         end
     end
 end
 
-function plot_empirical_CAB(model::Flux.Chain, neuron_layer::Int, neuron_index::Int, frame::Union{Int, Nothing} = nothing, to_save::Bool = true)
+function plot_empirical_CAB(models::Vector{Flux.Chain}, neuron_layer::Int, neuron_index::Int, frame::Union{Int, Nothing} = nothing, to_save::Bool = true)
+    model = models[frame+1]
     # --- Figure Setup ---
     title_text = isnothing(frame) ? latexstring("z^{[$neuron_layer]}_$neuron_index \\text{ with CAB}") : latexstring("z^{[$neuron_layer]}_{$neuron_index} \\text{ with CAB at frame $frame}")
     fig = Figure(size = (900, 600))
@@ -137,7 +138,7 @@ function plot_empirical_CAB(model::Flux.Chain, neuron_layer::Int, neuron_index::
     axislegend(ax, position=:lt)
 
     # --- Colorbar ---
-    Colorbar(fig[1, 2], colormap = reverse(cgrad(ColorSchemes.Blues)), limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
+    Colorbar(fig[1, 2], colormap = reverse(cgrad(ColorSchemes.broc)), limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
 
     # --- Save Figure ---
     if to_save
@@ -158,7 +159,7 @@ end
 # ─────────────────────────────
 function create_empirical_animation(models::Vector{Flux.Chain}, total_frame::Int; output_path::String="CAB_animation_empirical.mp4", framerate::Int=10)
     # === Dimensions ===
-    n = get_n(models[1], 2)
+    n = get_empirical_n(models[1], 2)
     L = length(n)-1
 
     # === Figure ===
@@ -178,7 +179,7 @@ function create_empirical_animation(models::Vector{Flux.Chain}, total_frame::Int
     colsize!(fig.layout, 1, Auto(false))
 
     # === Colorbar === 
-    Colorbar(fig[1, 3], colormap = reverse(cgrad(ColorSchemes.Blues)), limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
+    Colorbar(fig[1, 3], colormap = reverse(cgrad(ColorSchemes.broc)), limits = (-10, 10), label = "Non-Boundary", width = 20, height = Relative(0.9))
     colsize!(fig.layout, 3, Auto(false))
 
     # === Plots ===
@@ -197,9 +198,9 @@ function create_empirical_animation(models::Vector{Flux.Chain}, total_frame::Int
     
     rowsize!(fig.layout, 1, Relative(0.4))
     colsize!(fig.layout, 2, Relative(0.8))
-    record(fig, output_path, 1:total_frame; framerate=framerate) do frame
+    record(fig, output_path, 0:total_frame; framerate=framerate) do frame
         points_T = EMPIRICAL_GRID.points_T
-        pre_activations = get_pre_activations(models[frame], points_T)
+        pre_activations = get_pre_activations(models[frame+1], points_T)
         for row in 1:L
             neuron_layer = L + 1 - row
             for neuron_index in 1:n[neuron_layer+1]
@@ -237,7 +238,7 @@ function plot_empirical_CAB_3D(model::Chain, neuron_layer::Int, neuron_index::In
     ax = Axis3(fig[1, 1]; xlabel=latexstring("a^{[0]}_1"),  ylabel=latexstring("a^{[0]}_2"), zlabel=latexstring("a^{[0]}_3"), title=title_text)
     
     # --- Isosurface ---
-    volume!(ax, x[1]..x[end], y[1]..y[end], z[1]..z[end], V; algorithm=:iso, isovalue=0.0, colormap=:blues)
+    volume!(ax, x[1]..x[end], y[1]..y[end], z[1]..z[end], V; algorithm=:iso, isovalue=0.0, colormap=:broc)
     
     display(fig)  # opens rotatable 3D window
     return fig
