@@ -70,6 +70,10 @@ function get_pre_activations(model::Flux.Chain, a::Matrix{Float64})
             norm_a = (a .- layer_mean_a) ./ sqrt.(layer_var_a .+ layer.ϵ)
             z = (layer.:diag.scale .* norm_a) .+ layer.:diag.bias
             a = layer.λ.(z)
+        elseif layer isa WeightNorm && layer.layer isa Dense
+            eff_weight = layer.g .* (layer.v ./ norm(layer.v))
+            z = eff_weight * a .+ layer.layer.bias
+            a = layer.layer.σ.(z)
         end
         push!(pre_activations, Dict(:z => z, :a => a))
     end
